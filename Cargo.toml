@@ -1,0 +1,17 @@
+[package]
+name = "rust-2"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+git2 = "0.20.0"
+regex = "1"
+pathdiff = "0.2"
+rust_xlsxwriter = "0.84.0"
+log = "0.4.26"
+cached = "0.55.1"
+clap = { version = "4.5.35", features = ["derive"] }
+
+[dependencies.simple_logger]
+version = "5.0.0"
+features = ["threads"]
