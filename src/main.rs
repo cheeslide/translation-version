@@ -224,7 +224,10 @@ fn get_distances_by_commits(
         target_files: &mut HashMap<&TranslationID, HashSet<&String>>,
         distances: &mut HashMap<&TranslationID, usize>,
     ) {
-        let ids_set = target_files.get_mut(slug).unwrap();
+        let ids_set = match target_files.get_mut(slug) {
+            Some(x) => x,
+            None => return,
+        };
         ids_set.remove(id);
         if ids_set.is_empty() {
             target_files.remove(slug);
@@ -285,9 +288,10 @@ fn get_distances_by_commits(
         for delta in diff.deltas() {
             // file_path is relative to the working directory of the repository
             let file_path = delta.new_file().path().or(delta.old_file().path());
+            
             use git2::Delta;
-            match delta.status() {
-                Delta::Modified => {}
+            if match delta.status() {
+                Delta::Modified => false,
                 Delta::Unmodified | Delta::Ignored => continue,
                 Delta::Added | Delta::Renamed | Delta::Copied => {
                     log::error!(
@@ -295,15 +299,7 @@ fn get_distances_by_commits(
                         file_path,
                         curr_id
                     );
-                    remove_target_commit(
-                        &curr_id,
-                        &TranslationID {
-                            slug: file_path.unwrap().to_str().unwrap().to_string(),
-                        },
-                        &mut target_files,
-                        &mut distances,
-                    );
-                    continue;
+                    true
                 }
                 Delta::Deleted
                 | Delta::Conflicted
@@ -312,20 +308,23 @@ fn get_distances_by_commits(
                 | Delta::Typechange => {
                     log::error!(
                         "file {:?} was deleted or has undergone a change that I can not understand in {}, so I give up analysing it. This occasion is expected not to happen.",
-                        delta.old_file().path(),
+                        file_path,
                         curr_id
                     );
-                    remove_target_commit(
-                        &curr_id,
-                        &TranslationID {
-                            slug: file_path.unwrap().to_str().unwrap().to_string(),
-                        },
-                        &mut target_files,
-                        &mut distances,
-                    );
-                    continue;
+                    true
                 }
+            } {
+                remove_target_commit(
+                    &curr_id,
+                    &TranslationID {
+                        slug: file_path.unwrap().to_str().unwrap().to_string(),
+                    },
+                    &mut target_files,
+                    &mut distances,
+                );
+                continue;
             }
+
             let file_path = file_path.unwrap();
             let slug = match TranslationID::new_with_reletive_path(
                 file_path.to_str().unwrap().to_string(),
