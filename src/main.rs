@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead};
 use std::sync::LazyLock;
-use std::{cmp, env, fmt, path, thread};
+use std::{cmp, fmt, path, thread};
 
 use cached::proc_macro::cached;
 use clap::{Parser, Subcommand};
@@ -18,14 +18,14 @@ static MAX_CONCURRENT_WORKERS: LazyLock<usize> = LazyLock::new(|| match CLI.comm
         max_concurrent_workers: x,
         max_pack_capacity: _,
     } => x,
-    _ => panic!("max_concurrent_workers should be set in Compare command"),
+    // _ => panic!("max_concurrent_workers should be set in Compare command"),
 });
 static MAX_PACK_CAPACITY: LazyLock<usize> = LazyLock::new(|| match CLI.command {
     Commands::Compare {
         max_concurrent_workers: _,
         max_pack_capacity: x,
     } => x,
-    _ => panic!("max_pack_capacity should be set in Compare command"),
+    // _ => panic!("max_pack_capacity should be set in Compare command"),
 });
 
 enum FileStatus {
@@ -60,9 +60,9 @@ struct Cli {
 enum Commands {
     /// compare content & translation folder, see the difference
     Compare {
-        #[arg(long)]
+        #[arg(long, default_value_t = 32)]
         max_concurrent_workers: usize,
-        #[arg(long)]
+        #[arg(long, default_value_t = 500)]
         max_pack_capacity: usize,
     },
 }
@@ -117,10 +117,9 @@ struct SingleResult {
 #[inline]
 #[cached]
 fn get_content_folder() -> Box<path::Path> {
-    let x = env::args()
-        .nth(1)
-        .expect("the content folder should be the first argument");
-    let x = path::Path::new(x.as_str()).canonicalize().unwrap();
+    let x = &CLI.content;
+    log::debug!("content folder: {:?}", x);
+    let x = x.canonicalize().unwrap();
     return x.into();
 }
 
@@ -138,10 +137,9 @@ fn get_content_folder_reletive() -> Box<path::Path> {
 #[inline]
 #[cached]
 fn get_translation_folder() -> Box<path::Path> {
-    let x = env::args()
-        .nth(2)
-        .expect("the translation folder should be the second argument");
-    let x = path::Path::new(x.as_str()).canonicalize().unwrap();
+    let x = &CLI.translation;
+    log::debug!("translation folder: {:?}", x);
+    let x = x.canonicalize().unwrap();
     return x.into();
 }
 
