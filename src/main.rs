@@ -346,7 +346,10 @@ fn get_distances_by_commits(
                 );
                 remove_target_commit(&curr_id, &slug, &mut target_files, &mut distances);
             }
-            *distances.get_mut(&slug).unwrap() += 1;
+            match distances.get_mut(&slug) {
+                Some(x) => *x += 1,
+                None => {}
+            }
         }
 
         curr_commit = parent; // walk the tree
