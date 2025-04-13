@@ -218,23 +218,6 @@ fn get_distances_by_commits(
     repo: &git2::Repository,
     target_commits: Vec<(&TranslationID, &String)>, // (slug, commit_id)
 ) -> Result<HashMap<(TranslationID, String), usize>, Box<dyn std::error::Error>> {
-    fn remove_target_commit(
-        id: &String,
-        slug: &TranslationID,
-        target_files: &mut HashMap<&TranslationID, HashSet<&String>>,
-        distances: &mut HashMap<&TranslationID, usize>,
-    ) {
-        let ids_set = match target_files.get_mut(slug) {
-            Some(x) => x,
-            None => return,
-        };
-        ids_set.remove(id);
-        if ids_set.is_empty() {
-            target_files.remove(slug);
-            distances.remove(slug);
-        }
-    }
-
     let head_commit = repo.head()?.peel_to_commit()?;
     // let head_tree = head_commit.tree()?;
 
@@ -286,45 +269,11 @@ fn get_distances_by_commits(
         let diff = repo.diff_tree_to_tree(Some(&parent_tree), Some(&curr_tree), None)?;
 
         for delta in diff.deltas() {
-            // file_path is relative to the working directory of the repository
-            let file_path = delta.new_file().path().or(delta.old_file().path());
-            
-            use git2::Delta;
-            if match delta.status() {
-                Delta::Modified => false,
-                Delta::Unmodified | Delta::Ignored => continue,
-                Delta::Added | Delta::Renamed | Delta::Copied => {
-                    log::error!(
-                        "file {:?} was added, deleted, renamed or copied into current location in {}. I do not want to track more history of it.",
-                        file_path,
-                        curr_id
-                    );
-                    true
-                }
-                Delta::Deleted
-                | Delta::Conflicted
-                | Delta::Unreadable
-                | Delta::Untracked
-                | Delta::Typechange => {
-                    log::error!(
-                        "file {:?} was deleted or has undergone a change that I can not understand in {}, so I give up analysing it. This occasion is expected not to happen.",
-                        file_path,
-                        curr_id
-                    );
-                    true
-                }
-            } {
-                remove_target_commit(
-                    &curr_id,
-                    &TranslationID {
-                        slug: file_path.unwrap().to_str().unwrap().to_string(),
-                    },
-                    &mut target_files,
-                    &mut distances,
-                );
+            if delta.status() == git2::Delta::Unmodified {
                 continue;
             }
-
+            // file_path is relative to the working directory of the repository
+            let file_path = delta.new_file().path().or(delta.old_file().path());
             let file_path = file_path.unwrap();
             let slug = match TranslationID::new_with_reletive_path(
                 file_path.to_str().unwrap().to_string(),
@@ -338,12 +287,42 @@ fn get_distances_by_commits(
                 None => continue,
             };
 
+            use git2::Delta;
+            if match delta.status() {
+                Delta::Modified | Delta::Unmodified | Delta::Ignored => false,
+                Delta::Added | Delta::Deleted | Delta::Renamed | Delta::Copied => {
+                    log::error!(
+                        "file {:?} was added, deleted, renamed or copied into current location in {}. I do not want to track more history of it.",
+                        file_path,
+                        curr_id
+                    );
+                    true
+                }
+                Delta::Conflicted | Delta::Unreadable | Delta::Untracked | Delta::Typechange => {
+                    log::error!(
+                        "file {:?} has undergone a change that I can not understand in {}, so I give up analysing it. This occasion is expected not to happen.",
+                        file_path,
+                        curr_id
+                    );
+                    true
+                }
+            } {
+                target_files.remove(&slug);
+                distances.remove(&slug);
+                continue;
+            }
+
             if ids_set.contains(&curr_id) {
                 res.insert(
                     (slug.clone(), curr_id.clone()),
                     *distances.get(&slug).unwrap(),
                 );
-                remove_target_commit(&curr_id, &slug, &mut target_files, &mut distances);
+                ids_set.remove(&curr_id);
+                if ids_set.is_empty() {
+                    target_files.remove(&slug);
+                    distances.remove(&slug);
+                    continue;
+                }
             }
             match distances.get_mut(&slug) {
                 Some(x) => *x += 1,
