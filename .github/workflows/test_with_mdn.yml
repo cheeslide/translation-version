@@ -1,0 +1,41 @@
+name: Test with MDN
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+    
+    - uses: actions/checkout@v4
+    - name: Checkout mdn/translated-content
+      uses: actions/checkout@v4
+      with:
+        repository: mdn/translated-content
+        path: translated-content
+        fetch-depth: 0
+    - name: Checkout mdn/content
+      uses: actions/checkout@v4
+      with:
+        repository: mdn/content
+        path: content
+        fetch-depth: 0
+        
+    - name: Run
+      run: cargo run -- --content ./content/files/en-us --translation ./translated-content/files/es --verbose compare
+      
+    - uses: actions/upload-artifact@v4
+      id: artifact-upload
+      with:
+        name: output.xlsx
+        path: "output.xlsx"
+        retention-days: 7
