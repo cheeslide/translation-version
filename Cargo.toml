@@ -1,6 +1,7 @@
 [package]
 name = "translation-version"
 license = "MPL-2.0"
+repository = "https://github.com/cheeslide/translation-version"
 version = "0.1.0"
 edition = "2021"
 
