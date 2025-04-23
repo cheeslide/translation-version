@@ -762,20 +762,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
 
 [[package]]
-name = "rust-2"
-version = "0.1.0"
-dependencies = [
- "cached",
- "clap",
- "git2",
- "log",
- "pathdiff",
- "regex",
- "rust_xlsxwriter",
- "simple_logger",
-]
-
-[[package]]
 name = "rust_xlsxwriter"
 version = "0.85.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -929,6 +915,20 @@ checksum = "9117f5d4db391c1cf6927e7bea3db74b9a1c1add8f7eda9ffd5364f40f57b82f"
 dependencies = [
  "displaydoc",
  "zerovec",
+]
+
+[[package]]
+name = "translation-version"
+version = "0.1.0"
+dependencies = [
+ "cached",
+ "clap",
+ "git2",
+ "log",
+ "pathdiff",
+ "regex",
+ "rust_xlsxwriter",
+ "simple_logger",
 ]
 
 [[package]]
