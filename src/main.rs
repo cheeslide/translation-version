@@ -13,20 +13,8 @@ use pathdiff;
 use rust_xlsxwriter as xlsx;
 
 static CLI: LazyLock<Cli> = LazyLock::new(|| Cli::parse());
-static MAX_CONCURRENT_WORKERS: LazyLock<usize> = LazyLock::new(|| match CLI.command {
-    Commands::Compare {
-        max_concurrent_workers: x,
-        max_pack_capacity: _,
-    } => x,
-    // _ => panic!("max_concurrent_workers should be set in Compare command"),
-});
-static MAX_PACK_CAPACITY: LazyLock<usize> = LazyLock::new(|| match CLI.command {
-    Commands::Compare {
-        max_concurrent_workers: _,
-        max_pack_capacity: x,
-    } => x,
-    // _ => panic!("max_pack_capacity should be set in Compare command"),
-});
+static PATTERN_SOURCE_COMMIT: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"\s{1,}sourceCommit:\s?([0-9a-f]{40})").unwrap());
 
 enum FileStatus {
     Unknown,
@@ -64,6 +52,8 @@ enum Commands {
         max_concurrent_workers: usize,
         #[arg(long, default_value_t = 500)]
         max_pack_capacity: usize,
+        #[arg(long, default_value_t = String::from("output.xlsx"))]
+        output: String,
     },
 }
 
@@ -75,7 +65,7 @@ impl fmt::Display for FileStatus {
             PendingCommmit(c) => format!("Pending Commmit {c}"),
             Untranslated => "Untranslated".to_string(),
             NoSourceCommit => "No Source Commit".to_string(),
-            Behind(d) => format!("Behind {}", d),
+            Behind(d) => format!("{:04} Behind", d),
             Synced => "Synced".to_string(),
         };
         write!(f, "{}", x)
@@ -114,6 +104,7 @@ struct SingleResult {
     file_status: FileStatus,
 }
 
+//  TODO: refactor with const
 #[inline]
 #[cached]
 fn get_content_folder() -> Box<path::Path> {
@@ -183,19 +174,18 @@ fn get_tasks(content_repo: &git2::Repository) -> Vec<TranslationID> {
 }
 
 fn get_status_by_id(t: &TranslationID) -> FileStatus {
-    let pattern = regex::Regex::new(r"\s{1,}sourceCommit:\s?([0-9a-f]{40})").unwrap();
     let translation_file = match t.get_translation_file() {
         Some(x) => x,
         None => return FileStatus::Untranslated,
     };
 
-    log::info!("reading file: {:?}", t.slug);
+    log::debug!("reading file: {:?}", t.slug);
     let file_start = io::BufReader::new(translation_file)
         .lines()
         .take(7)
         .fold(String::new(), |acc, x| acc + x.unwrap().as_str());
 
-    let source_commit = match pattern.captures(&file_start) {
+    let source_commit = match PATTERN_SOURCE_COMMIT.captures(&file_start) {
         Some(x) => x.get(1).unwrap().as_str(),
         None => return FileStatus::NoSourceCommit,
     };
@@ -219,7 +209,6 @@ fn get_distances_by_commits(
     target_commits: Vec<(&TranslationID, &String)>, // (slug, commit_id)
 ) -> Result<HashMap<(TranslationID, String), usize>, Box<dyn std::error::Error>> {
     let head_commit = repo.head()?.peel_to_commit()?;
-    // let head_tree = head_commit.tree()?;
 
     let mut target_files: HashMap<&TranslationID, HashSet<&String>> =
         HashMap::with_capacity(target_commits.len()); // key is slug, value is commit ids
@@ -272,44 +261,47 @@ fn get_distances_by_commits(
             if delta.status() == git2::Delta::Unmodified {
                 continue;
             }
+
             // file_path is relative to the working directory of the repository
-            let file_path = delta.new_file().path().or(delta.old_file().path());
-            let file_path = file_path.unwrap();
-            let slug = match TranslationID::new_with_reletive_path(
+            let Some(file_path) = delta.new_file().path().or(delta.old_file().path()) else {
+                log::error!("file_path is None");
+                continue;
+            };
+
+            let Some(slug) = TranslationID::new_with_reletive_path(
                 file_path.to_str().unwrap().to_string(),
                 get_content_folder(),
-            ) {
-                Some(x) => x,
-                None => continue,
+            ) else {
+                continue;
             };
-            let ids_set = match target_files.get_mut(&slug) {
-                Some(x) => x,
-                None => continue,
+
+            let Some(ids_set) = target_files.get_mut(&slug) else {
+                continue;
             };
 
             use git2::Delta;
-            if match delta.status() {
-                Delta::Modified | Delta::Unmodified | Delta::Ignored => false,
+            match delta.status() {
                 Delta::Added | Delta::Deleted | Delta::Renamed | Delta::Copied => {
                     log::error!(
-                        "file {:?} was added, deleted, renamed or copied into current location in {}. I do not want to track more history of it.",
+                        "file {:?} was added/deleted/renamed/copied in {}. Stopping history tracking.",
                         file_path,
                         curr_id
                     );
-                    true
+                    target_files.remove(&slug);
+                    distances.remove(&slug);
+                    continue;
                 }
                 Delta::Conflicted | Delta::Unreadable | Delta::Untracked | Delta::Typechange => {
                     log::error!(
-                        "file {:?} has undergone a change that I can not understand in {}, so I give up analysing it. This occasion is expected not to happen.",
+                        "file {:?} has unexpected change in {}. Skipping analysis.",
                         file_path,
                         curr_id
                     );
-                    true
+                    target_files.remove(&slug);
+                    distances.remove(&slug);
+                    continue;
                 }
-            } {
-                target_files.remove(&slug);
-                distances.remove(&slug);
-                continue;
+                Delta::Modified | Delta::Unmodified | Delta::Ignored => {}
             }
 
             if ids_set.contains(&curr_id) {
@@ -324,9 +316,9 @@ fn get_distances_by_commits(
                     continue;
                 }
             }
-            match distances.get_mut(&slug) {
-                Some(x) => *x += 1,
-                None => {}
+
+            if let Some(x) = distances.get_mut(&slug) {
+                *x += 1;
             }
         }
 
@@ -336,7 +328,7 @@ fn get_distances_by_commits(
     Ok(res)
 }
 
-fn export_results(results: &Vec<SingleResult>) -> Result<(), &'static str> {
+fn export_results(results: &Vec<SingleResult>, filename: &String) -> Result<(), &'static str> {
     let mut wbook = xlsx::Workbook::new();
     let wsheet = wbook.add_worksheet();
 
@@ -351,24 +343,23 @@ fn export_results(results: &Vec<SingleResult>) -> Result<(), &'static str> {
         .unwrap();
 
     wsheet.autofit();
-    wbook.save("output.xlsx").unwrap();
+    wbook.save(filename).unwrap();
     Ok(())
 }
 
-fn feature_compare() {
+fn feature_compare(max_concurrent_workers: usize, max_pack_capacity: usize, output: &String) {
     let mut workers: Vec<_> = Vec::new();
     let mut results_n: Vec<Vec<SingleResult>> = Vec::new(); // results_n: nested result
 
     debug!("the content folder is {:?}", get_content_folder());
     debug!("the translation folder is {:?}", get_translation_folder());
     let content_repo = Repository::init(get_nearest_repo_folder(get_content_folder())).unwrap();
-    // let translation_repo = get_nearest_repo(&get_translation_folder());
 
     let mut tasks: Vec<TranslationID> = get_tasks(&content_repo);
     info!("got {} tasks.", tasks.len());
 
     while tasks.len() != 0 {
-        let pack_capacity = cmp::min(*MAX_PACK_CAPACITY, tasks.len());
+        let pack_capacity = cmp::min(max_pack_capacity, tasks.len());
         let task_pack = tasks.split_off(tasks.len() - pack_capacity);
         let worker = thread::spawn(move || work(task_pack));
         debug!(
@@ -378,12 +369,12 @@ fn feature_compare() {
         );
         workers.push(worker);
 
-        while workers.len() >= *MAX_CONCURRENT_WORKERS {
-            if log_enabled!(log::Level::Error) && workers.len() > *MAX_CONCURRENT_WORKERS {
+        while workers.len() >= max_concurrent_workers {
+            if log_enabled!(log::Level::Error) && workers.len() > max_concurrent_workers {
                 error!(
                     "{} workers are in vec, greater than the maximum {}",
                     workers.len(),
-                    *MAX_CONCURRENT_WORKERS
+                    max_concurrent_workers
                 );
             }
             thread::sleep(std::time::Duration::from_secs(1));
@@ -417,21 +408,24 @@ fn feature_compare() {
         .collect();
     debug!("searching commits.");
     let distances = get_distances_by_commits(&content_repo, distances_t).unwrap(); // distances: distances result
+
     for i in result_f.iter_mut() {
-        if let FileStatus::PendingCommmit(c) = &i.file_status {
-            i.file_status = distances.get(&(i.file_id.clone(), c.to_string())).map_or(
-                FileStatus::Unknown,
-                |x| {
-                    if *x == 0 {
-                        FileStatus::Synced
-                    } else {
-                        FileStatus::Behind(*x)
-                    }
-                },
-            );
-        }
+        let FileStatus::PendingCommmit(c) = &i.file_status else {
+            continue;
+        };
+
+        let Some(distance) = distances.get(&(i.file_id.clone(), c.to_string())) else {
+            i.file_status = FileStatus::Unknown;
+            continue;
+        };
+
+        i.file_status = if *distance == 0 {
+            FileStatus::Synced
+        } else {
+            FileStatus::Behind(*distance)
+        };
     }
-    export_results(&result_f).unwrap();
+    export_results(&result_f, output).unwrap();
 }
 
 fn main() {
@@ -441,16 +435,14 @@ fn main() {
         simple_logger::init_with_level(log::Level::Info).unwrap();
     }
 
-    if matches!(
-        CLI.command,
+    match &CLI.command {
         Commands::Compare {
-            max_concurrent_workers: _,
-            max_pack_capacity: _
+            max_concurrent_workers: c,
+            max_pack_capacity: p,
+            output: o,
+        } => {
+            log::info!("running compare command");
+            feature_compare(*c, *p, o);
         }
-    ) {
-        let _ = *MAX_CONCURRENT_WORKERS;
-        let _ = *MAX_PACK_CAPACITY;
-        log::info!("running compare command");
-        feature_compare();
     }
 }

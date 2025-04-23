@@ -1,5 +1,5 @@
 [package]
-name = "rust-2"
+name = "translation-version"
 version = "0.1.0"
 edition = "2021"
 
